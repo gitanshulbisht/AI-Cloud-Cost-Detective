@@ -28,10 +28,10 @@
 set -euo pipefail
 
 # ── Config ───────────────────────────────────────────────────────────────────
-RG="cost-detective-rg"
-LOCATION="eastus"
+RG="cost-detective-rg2"
+LOCATION="eastus2"
 VM_NAME="costdetective-vm"
-STORAGE_NAME="costdetectivestore$(openssl rand -hex 4)"   # must be globally unique
+STORAGE_NAME="costdetstore$(openssl rand -hex 4)"   # must be < 24 chars and globally unique
 PIP_NAME="costdetective-pip"
 PG_SERVER="costdetective-pg-$(openssl rand -hex 4)"       # must be globally unique
 PG_DB="costdetectivedb"
@@ -56,6 +56,16 @@ fi
 
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 echo "✅ Logged in to subscription: $SUBSCRIPTION_ID"
+az account set --subscription "$SUBSCRIPTION_ID"
+echo "✅ Explicitly set active subscription."
+echo ""
+
+echo "🔧 Ensuring required resource providers are registered (this may take a minute)..."
+az provider register --namespace Microsoft.Storage --wait
+az provider register --namespace Microsoft.Network --wait
+az provider register --namespace Microsoft.DBforPostgreSQL --wait
+az provider register --namespace Microsoft.Compute --wait
+echo "✅ Resource providers registered."
 echo ""
 
 # ── 1. Resource Group ─────────────────────────────────────────────────────────
@@ -71,59 +81,48 @@ echo ""
 echo "💻 [2/6] Finding an available VM SKU in $LOCATION..."
 
 # Try a list of "over-provisioned" SKUs in order of preference.
-# Standard_D4s_v3 is common but can be capacity-restricted on free subscriptions.
+# Instead of querying the slow list-skus API, we just attempt to create the VM.
 CANDIDATE_SKUS=(
+  "Standard_B1s"
+  "Standard_B2s"
+  "Standard_B2ms"
+  "Standard_B4ms"
+  "Standard_D2s_v3"
   "Standard_D4s_v3"
   "Standard_D4s_v4"
-  "Standard_D4s_v5"
-  "Standard_D4_v3"
-  "Standard_D4_v4"
-  "Standard_D2s_v3"
-  "Standard_B4ms"
-  "Standard_B2ms"
 )
 
 VM_SIZE=""
 for SKU in "${CANDIDATE_SKUS[@]}"; do
-  echo "   Checking $SKU..."
-  RESTRICTIONS=$(az vm list-skus \
-    --location "$LOCATION" \
+  echo "   Attempting to create VM with SKU: $SKU..."
+  if az vm create \
+    --resource-group "$RG" \
+    --name "$VM_NAME" \
+    --image Ubuntu2204 \
     --size "$SKU" \
-    --query "[0].restrictions[?reasonCode=='NotAvailableForSubscription'] | length(@)" \
-    -o tsv 2>/dev/null || echo "99")
-  if [ "$RESTRICTIONS" = "0" ] || [ -z "$RESTRICTIONS" ]; then
+    --admin-username azureuser \
+    --generate-ssh-keys \
+    --tags "env=dev" "purpose=cost-detective-test" \
+    --output none 2>/dev/null; then
+    
     VM_SIZE="$SKU"
-    echo "   ✅ $SKU is available — using this."
+    echo "   ✅ Successfully created VM with $SKU."
     break
   else
-    echo "   ⚠️  $SKU has capacity restrictions, trying next..."
+    echo "   ⚠️  Failed to create with $SKU, trying next..."
   fi
 done
 
 if [ -z "$VM_SIZE" ]; then
   echo "❌ No suitable VM SKU found in $LOCATION. Skipping VM creation."
   echo "   The other resources will still be provisioned."
-  VM_SIZE="SKIPPED"
-fi
-
-if [ "$VM_SIZE" != "SKIPPED" ]; then
-  echo "💻 Creating VM: $VM_NAME (size: $VM_SIZE — intentionally over-provisioned)..."
-  az vm create \
-    --resource-group "$RG" \
-    --name "$VM_NAME" \
-    --image Ubuntu2204 \
-    --size "$VM_SIZE" \
-    --admin-username azureuser \
-    --generate-ssh-keys \
-    --tags "env=dev" "purpose=cost-detective-test" \
-    --output none
-
+else
   echo "⏸  Deallocating VM to avoid compute charges..."
   az vm deallocate \
     --resource-group "$RG" \
     --name "$VM_NAME" \
     --output none
-  echo "✅ VM ($VM_SIZE) created and deallocated (disk only billing ~\$2/month)."
+  echo "✅ VM ($VM_SIZE) deallocated (disk only billing ~\$2/month)."
 fi
 
 # ── 3. Storage Account ────────────────────────────────────────────────────────

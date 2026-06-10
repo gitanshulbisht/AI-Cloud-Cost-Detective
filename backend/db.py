@@ -7,6 +7,8 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+import ssl
+
 _pool = None
 
 async def get_db_pool():
@@ -14,7 +16,17 @@ async def get_db_pool():
     if _pool is None:
         if not DATABASE_URL:
             raise ValueError("DATABASE_URL is not set in environment variables.")
-        _pool = await asyncpg.create_pool(DATABASE_URL)
+        
+        # asyncpg doesn't like ssl=require in the connection string, we must pass it explicitly
+        clean_url = DATABASE_URL.replace("?ssl=require", "")
+        
+        if "database.azure.com" in clean_url:
+            ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            _pool = await asyncpg.create_pool(clean_url, ssl=ctx)
+        else:
+            _pool = await asyncpg.create_pool(clean_url)
     return _pool
 
 async def init_db():
