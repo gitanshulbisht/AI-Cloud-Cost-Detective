@@ -41,7 +41,6 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         ''')
-    await pool.close()
     print("Database tables initialized.")
 
 if __name__ == "__main__":

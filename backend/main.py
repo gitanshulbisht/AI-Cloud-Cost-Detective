@@ -6,6 +6,7 @@ import bcrypt
 import jwt
 import os
 import datetime
+import json
 from db import get_db_pool, init_db
 from dotenv import load_dotenv
 
@@ -56,13 +57,17 @@ async def get_authenticated_user_id(credentials: HTTPAuthorizationCredentials = 
 async def startup_event():
     await init_db()
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    pool = await get_db_pool()
+    await pool.close()
+
 @app.post("/api/auth/signup")
 async def signup(user: UserCreate):
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         existing_user = await conn.fetchrow("SELECT id FROM users WHERE email = $1", user.email)
         if existing_user:
-            await pool.close()
             raise HTTPException(status_code=400, detail="Email already registered")
 
         salt = bcrypt.gensalt()
@@ -72,7 +77,6 @@ async def signup(user: UserCreate):
             "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id",
             user.email, hashed_password
         )
-    await pool.close()
 
     token = jwt.encode(
         {"sub": str(user_id), "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=24)},
@@ -85,7 +89,6 @@ async def login(user: UserLogin):
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         db_user = await conn.fetchrow("SELECT id, password_hash FROM users WHERE email = $1", user.email)
-    await pool.close()
 
     if not db_user or not bcrypt.checkpw(user.password.encode('utf-8'), db_user['password_hash'].encode('utf-8')):
          raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -173,7 +176,7 @@ async def run_analysis(request: AnalyzeRequest, user_id: str = Depends(get_authe
         except Exception as e:
             await manager.send_message(f"Error: {str(e)}", analysis_id)
         finally:
-            await pool.close()
+            pass  # pool stays open for app lifetime
 
     # Run the background task (in real app we might use BackgroundTasks or Celery, here we use asyncio.create_task for simplicity with WS)
     asyncio.create_task(process_analysis())
@@ -190,7 +193,6 @@ async def get_history(user_id: str = Depends(get_authenticated_user_id)):
             WHERE user_id = $1
             ORDER BY created_at DESC
         ''', int(user_id))
-    await pool.close()
 
     history = []
     for r in records:

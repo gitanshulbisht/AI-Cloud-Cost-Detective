@@ -43,7 +43,7 @@ async def analyze_costs(resources: list) -> dict:
 
     try:
         completion = await client.chat.completions.create(
-            model="meta/llama3-70b-instruct",
+            model="meta/llama-3.3-70b-instruct",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=1024,
