@@ -6,10 +6,10 @@
 #
 # What it creates (all inside a single resource group for easy teardown):
 #   1. Resource Group     : cost-detective-rg  (eastus)
-#   2. Virtual Machine    : Standard_D4s_v3   (intentionally over-provisioned)
-#   3. Storage Account    : Standard_LRS      (idle, no data)
-#   4. Public IP Address  : Static / Standard (unattached)
-#   5. PostgreSQL Flex    : Standard_B1ms     (app database)
+#   2. Virtual Machine    : auto-selected SKU  (intentionally over-provisioned)
+#   3. Storage Account    : Standard_LRS       (idle, no data)
+#   4. Public IP Address  : Static / Standard  (unattached)
+#   5. PostgreSQL Flex    : Standard_B1ms      (app database)
 #   6. PostgreSQL DB      : costdetectivedb
 #
 # Resources 2-4 are purposely "wasteful" so the AI has real findings to report.
@@ -68,23 +68,63 @@ echo "✅ Resource group created."
 
 # ── 2. Virtual Machine ────────────────────────────────────────────────────────
 echo ""
-echo "💻 [2/6] Creating VM: $VM_NAME (Standard_D4s_v3 — intentionally over-provisioned)..."
-az vm create \
-  --resource-group "$RG" \
-  --name "$VM_NAME" \
-  --image Ubuntu2204 \
-  --size Standard_D4s_v3 \
-  --admin-username azureuser \
-  --generate-ssh-keys \
-  --tags "env=dev" "purpose=cost-detective-test" \
-  --output none
+echo "💻 [2/6] Finding an available VM SKU in $LOCATION..."
 
-echo "⏸  Deallocating VM to avoid compute charges..."
-az vm deallocate \
-  --resource-group "$RG" \
-  --name "$VM_NAME" \
-  --output none
-echo "✅ VM created and deallocated (disk only billing ~\$2/month)."
+# Try a list of "over-provisioned" SKUs in order of preference.
+# Standard_D4s_v3 is common but can be capacity-restricted on free subscriptions.
+CANDIDATE_SKUS=(
+  "Standard_D4s_v3"
+  "Standard_D4s_v4"
+  "Standard_D4s_v5"
+  "Standard_D4_v3"
+  "Standard_D4_v4"
+  "Standard_D2s_v3"
+  "Standard_B4ms"
+  "Standard_B2ms"
+)
+
+VM_SIZE=""
+for SKU in "${CANDIDATE_SKUS[@]}"; do
+  echo "   Checking $SKU..."
+  RESTRICTIONS=$(az vm list-skus \
+    --location "$LOCATION" \
+    --size "$SKU" \
+    --query "[0].restrictions[?reasonCode=='NotAvailableForSubscription'] | length(@)" \
+    -o tsv 2>/dev/null || echo "99")
+  if [ "$RESTRICTIONS" = "0" ] || [ -z "$RESTRICTIONS" ]; then
+    VM_SIZE="$SKU"
+    echo "   ✅ $SKU is available — using this."
+    break
+  else
+    echo "   ⚠️  $SKU has capacity restrictions, trying next..."
+  fi
+done
+
+if [ -z "$VM_SIZE" ]; then
+  echo "❌ No suitable VM SKU found in $LOCATION. Skipping VM creation."
+  echo "   The other resources will still be provisioned."
+  VM_SIZE="SKIPPED"
+fi
+
+if [ "$VM_SIZE" != "SKIPPED" ]; then
+  echo "💻 Creating VM: $VM_NAME (size: $VM_SIZE — intentionally over-provisioned)..."
+  az vm create \
+    --resource-group "$RG" \
+    --name "$VM_NAME" \
+    --image Ubuntu2204 \
+    --size "$VM_SIZE" \
+    --admin-username azureuser \
+    --generate-ssh-keys \
+    --tags "env=dev" "purpose=cost-detective-test" \
+    --output none
+
+  echo "⏸  Deallocating VM to avoid compute charges..."
+  az vm deallocate \
+    --resource-group "$RG" \
+    --name "$VM_NAME" \
+    --output none
+  echo "✅ VM ($VM_SIZE) created and deallocated (disk only billing ~\$2/month)."
+fi
 
 # ── 3. Storage Account ────────────────────────────────────────────────────────
 echo ""
