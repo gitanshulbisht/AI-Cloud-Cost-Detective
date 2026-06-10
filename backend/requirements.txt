@@ -8,3 +8,7 @@ PyJWT
 bcrypt
 pydantic
 email-validator
+# Azure SDK
+azure-identity
+azure-mgmt-resource
+azure-mgmt-compute

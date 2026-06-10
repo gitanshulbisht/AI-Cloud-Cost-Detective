@@ -34,10 +34,40 @@
 
 AI Cloud Cost Detective automates the tedious process of cloud cost auditing. A user selects an Azure Resource Group, triggers an analysis, and the system:
 
-1. Scans all resources in that group via the **Azure CLI** (or mock data for local development).
+1. Scans all resources in that group via the **Azure SDK for Python** (or mock data for local development).
 2. Sends the resource inventory to **NVIDIA NIM** (Meta Llama 3.3 70B Instruct) for AI-powered cost analysis.
 3. Streams real-time progress updates back to the browser via **WebSockets**.
 4. Persists the structured JSON report to **PostgreSQL** and presents it in a rich UI.
+
+---
+
+## Screenshots
+
+*(Place your screenshot images in the `docs/screenshots/` folder to display them here)*
+
+### 1. Azure Resource Provisioning
+![Azure Resources](docs/screenshots/azure_portal.png)
+
+### 2. Analysis History Dashboard
+![History Dashboard](docs/screenshots/history.png)
+
+### 3. Detailed AI Cost Report
+![Cost Report 1](docs/screenshots/report1.png)
+
+### 4. Detected Issues & Fix Commands
+![Cost Report 2](docs/screenshots/report2.png)
+![Cost Report 3](docs/screenshots/report3.png)
+
+---
+
+## Why this Project? (vs Native Azure Tools)
+
+Azure provides native tools like Azure Advisor and Azure Cost Management, but this custom LLM-based solution offers unique advantages:
+
+1. **Context-Aware Reasoning**: Native tools rely on fixed thresholds (e.g., low CPU) and lack context. An LLM can analyze custom tags (like `environment: backup-dr`) and naming conventions to understand *why* a resource exists, avoiding false positives.
+2. **Auto-Remediation Generation**: Instead of just pointing out wasteful spending, the AI actually generates the exact `az` CLI commands needed to instantly fix or deallocate the resources.
+3. **Multi-Cloud Potential**: This exact architecture can be easily expanded to support AWS and GCP by swapping the scanner module, creating a "single pane of glass" for multi-cloud FinOps.
+4. **Learnings**: This project serves as an excellent showcase of integrating official Cloud SDKs, leveraging Large Language Models for complex reasoning, building asynchronous full-stack web applications, and managing real-time WebSocket streams.
 
 ---
 
@@ -46,7 +76,7 @@ AI Cloud Cost Detective automates the tedious process of cloud cost auditing. A 
 | Feature | Description |
 |---|---|
 | 🔐 **JWT Authentication** | Stateless Bearer token auth with bcrypt password hashing |
-| ☁️ **Azure Resource Scanning** | Calls `az resource list` and `az group list` via subprocess, with mock fallback |
+| ☁️ **Azure Resource Scanning** | Uses the official **Azure SDK for Python** (`azure-mgmt-resource`), with mock fallback |
 | 🤖 **AI Cost Analysis** | LLM identifies over-provisioned, unused, and misconfigured resources |
 | 📡 **Real-time WebSocket Progress** | Step-by-step streaming of analysis stages to the browser |
 | 📊 **Analysis History** | All past runs stored in PostgreSQL, browsable and clickable |
@@ -67,7 +97,7 @@ AI Cloud Cost Detective automates the tedious process of cloud cost auditing. A 
 | Authentication | **PyJWT** + **bcrypt** |
 | AI Client | **OpenAI SDK** pointed at NVIDIA NIM endpoint |
 | AI Model | `meta/llama-3.3-70b-instruct` via `integrate.api.nvidia.com` |
-| Azure Integration | **Azure CLI** (`az`) via Python `subprocess` |
+| Azure Integration | **Azure SDK for Python** (`azure-identity`, `azure-mgmt-resource`) |
 | Real-time | **WebSockets** (FastAPI native) |
 | Config | **python-dotenv** |
 
@@ -171,14 +201,13 @@ AI Cloud Cost Detective automates the tedious process of cloud cost auditing. A 
 │              EXTERNAL SERVICES                         │
 │                                                        │
 │  ┌──────────────────────┐  ┌────────────────────────┐ │
-│  │   Azure CLI (az)     │  │  NVIDIA NIM API         │ │
+│  │   Azure SDK          │  │  NVIDIA NIM API         │ │
 │  │                      │  │  integrate.api.nvidia   │ │
-│  │  az group list       │  │  .com/v1                │ │
-│  │  az resource list    │  │                         │ │
-│  │  --resource-group X  │  │  Model:                 │ │
-│  │                      │  │  meta/llama-3.3-        │ │
-│  │  [Mock mode          │  │  70b-instruct           │ │
-│  │   available]         │  │                         │ │
+│  │  ResourceManagement  │  │  .com/v1                │ │
+│  │  Client              │  │                         │ │
+│  │                      │  │  Model:                 │ │
+│  │  [Mock mode          │  │  meta/llama-3.3-        │ │
+│  │   available]         │  │  70b-instruct           │ │
 │  └──────────────────────┘  └────────────────────────┘ │
 └───────────────────────────────────────────────────────┘
 ```
@@ -252,7 +281,7 @@ This is the core flow — it combines a REST POST to kick off the job and a WebS
      │ GET /api/resource-groups             │                  │                 │
      │  Authorization: Bearer <JWT>         │                  │                 │
      │─────────────────►│                  │                  │                 │
-     │                  │ az group list -o json               │                 │
+     │                  │ Azure SDK: client.resource_groups.list() │             │
      │                  │ (or MOCK_RESOURCE_GROUPS)           │                 │
      │                  │─────────────────────────────────────►│                 │
      │                  │◄── [{ name: "dev-rg" }, ...]────────│                 │
@@ -283,7 +312,7 @@ This is the core flow — it combines a REST POST to kick off the job and a WebS
      │                  │                  │                  │                 │
      │◄═ "Scanning resources in dev-rg..."│                  │                 │
      │                  │                  │                  │                 │
-     │                  │ az resource list --resource-group dev-rg -o json      │
+     │                  │ Azure SDK: client.resources.list_by_resource_group()  │
      │                  │─────────────────────────────────────►│                │
      │                  │◄── [{ type, name, location, sku, tags }, ...] ────────│
      │                  │                  │                  │                 │
@@ -369,7 +398,7 @@ AI-Cloud-Cost-Detective/
 ├── backend/
 │   ├── main.py              # FastAPI app, all routes, WebSocket manager, startup/shutdown hooks
 │   ├── ai_analyzer.py       # NVIDIA NIM LLM client, prompt engineering, JSON response parsing
-│   ├── azure_scanner.py     # Azure CLI subprocess wrapper + mock data for local dev
+│   ├── azure_scanner.py     # Azure SDK for Python wrapper + mock data for local dev
 │   ├── db.py                # asyncpg connection pool, init_db() creates tables on startup
 │   ├── requirements.txt     # Python dependencies
 │   ├── .env                 # Environment variables (not committed)
@@ -392,6 +421,11 @@ AI-Cloud-Cost-Detective/
     ├── vite.config.ts       # Vite + React + Tailwind CSS v4 plugin setup
     ├── package.json
     └── tsconfig.app.json
+│
+└── infra/
+    ├── provision.sh         # Bash script to provision test Azure resources (VM, Storage, IP)
+    ├── teardown.sh          # Cleanup script to delete provisioned test resources
+    └── README.md            # Infrastructure deployment instructions
 ```
 
 ---
@@ -560,7 +594,7 @@ The frontend will be available at `http://localhost:5173`.
 | Mode | `USE_MOCK_AZURE_CLI` | Requirements |
 |---|---|---|
 | **Mock** (default) | `"true"` | No Azure account needed. Returns hardcoded 3 resources: a `Standard_D8s_v3` VM, `Premium_P4` SQL DB, and an unused Public IP. |
-| **Live** | `"false"` | Requires `az login` + sufficient subscription permissions. Calls real `az group list` and `az resource list`. |
+| **Live** | `"false"` | Requires `az login` + sufficient subscription permissions. Uses the official **Azure SDK** to fetch real resources. |
 
 The mock resources are intentionally "expensive-looking" to give the LLM meaningful material for generating cost-saving recommendations.
 
